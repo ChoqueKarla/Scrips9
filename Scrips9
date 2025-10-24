@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# setup_server.sh
+# Instala Apache, MariaDB, PHP, HAProxy, UFW y crea usuarios con contraseñas = nombre de usuario.
+# Compatible con Debian / Ubuntu.
+
+set -euo pipefail
+IFS=$'\n\t'
+
+USERS=(zurita choque medrano zambrana)
+PASS_FILE="/root/new_users.txt"
+LOG="/var/log/setup_server.log"
+
+echo "Inicio de instalación - $(date)" | tee -a "$LOG"
+
+# --- Actualización del sistema ---
+echo "Actualizando el sistema..." | tee -a "$LOG"
+apt update -y && apt upgrade -y
+
+# --- Paquetes básicos ---
+echo "Instalando paquetes básicos..." | tee -a "$LOG"
+# AÑADIDO: 'systemd-sysv' para asegurar que systemctl y sus redirecciones tengan las utilidades necesarias
+apt install -y software-properties-common apt-transport-https ca-certificates curl wget git zip htop nano vim unzip gnupg lsb-release systemd-sysv
+
+# --- Instalación de Apache2 ---
+echo "Instalando Apache2..." | tee -a "$LOG"
+apt install -y apache2 || { echo "Apache2 no pudo ser instalado"; exit 1; }
+
+# --- Instalación de MariaDB ---
+echo "Instalando MariaDB..." | tee -a "$LOG"
+apt install -y mariadb-server || { echo "MariaDB no pudo ser instalado"; exit 1; }
+
+# --- Instalación de PHP 8.4 o la versión más reciente disponible ---
+echo "Instalando PHP..." | tee -a "$LOG"
+add-apt-repository -y ppa:ondrej/php || true
+apt update -y
+apt install -y php php-fpm php-mysql php-cli php-xml php-mbstring || { echo "PHP no pudo ser instalado"; exit 1; }
+
+# --- Instalación de HAProxy ---
+echo "Instalando HAProxy..." | tee -a "$LOG"
+apt install -y haproxy || { echo "HAProxy no pudo ser instalado"; exit 1; }
+
+# --- Instalación de UFW e IPTables ---
+echo "Instalando UFW y configurando el firewall..." | tee -a "$LOG"
+apt install -y ufw iptables-persistent || { echo "UFW no pudo ser instalado"; exit 1; }
+
+# --- Habilitar y arrancar servicios ---
+echo "Habilitando y arrancando servicios..." | tee -a "$LOG"
+# Con 'systemd-sysv' instalado, esta línea debería funcionar sin problemas de "No such file or directory"
+if ! systemctl enable apache2; then
+  echo "apache2.service no pudo ser habilitado con systemctl, intentando con update-rc.d." | tee -a "$LOG"
+  # La línea original ya tenía un buen fallback
+  sudo update-rc.d apache2 defaults || { echo "No se pudo habilitar Apache2"; exit 1; }
+fi
+
+systemctl enable --now mariadb
+systemctl enable --now ssh
+systemctl enable --now haproxy
+
+# --- Configuración básica del firewall ---
+echo "Configurando el firewall UFW..." | tee -a "$LOG"
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow OpenSSH
+ufw allow 'Apache Full'
+ufw --force enable
+iptables-save > /etc/iptables/rules.v4 || true
+ip6tables-save > /etc/iptables/rules.v6 || true
+
+# --- Creación de usuarios ---
+echo "Creando usuarios..." | tee -a "$LOG"
+: > "$PASS_FILE"
+chmod 600 "$PASS_FILE"
+
+for u in "${USERS[@]}"; do
+  if id -u "$u" >/dev/null 2>&1; then
+    echo "El usuario $u ya existe, actualizando contraseña." | tee -a "$LOG"
+  else
+    useradd -m -s /bin/bash "$u"
+    echo "Usuario $u creado." | tee -a "$LOG"
+  fi
+
+  # Contraseña igual al nombre
+  echo "${u}:${u}" | chpasswd
+
+  # Forzar cambio al primer inicio de sesión
+  chage -d 0 "$u" || true
+
+  echo "$u:$u" >> "$PASS_FILE"
+done
+
+chmod 600 "$PASS_FILE"
+echo "Usuarios creados: ${USERS[*]}" | tee -a "$LOG"
+echo "Archivo con contraseñas: $PASS_FILE (permiso 600)" | tee -a "$LOG"
+
+# --- Configuración mínima de HAProxy ---
+HAPROXY_CFG="/etc/haproxy/haproxy.cfg"
+if [ -f "$HAPROXY_CFG" ]; then
+  if ! grep -q "frontend http-in" "$HAPROXY_CFG" 2>/dev/null; then
+    echo "Configurando HAProxy..." | tee -a "$LOG"
+    cat > "$HAPROXY_CFG" <<'EOF'
+global
+    log /dev/log    local0
+    log /dev/log    local1 notice
+    daemon
+    maxconn 2000
+
+defaults
+    log     global
+    mode    http
+    option  httplog
+    option  dontlognull
+    timeout connect 5s
+    timeout client  50s
+    timeout server  50s
+
+frontend http-in
+    bind *:80
+    default_backend servers
+
+backend servers
+    server apache1 127.0.0.1:8080 check
+EOF
+
+    # Cambiar Apache a puerto 8080 para coexistir con HAProxy
+    if [ -f /etc/apache2/ports.conf ]; then
+      sed -i 's/Listen 80/Listen 8080/g' /etc/apache2/ports.conf || true
+      for f in /etc/apache2/sites-enabled/*.conf /etc/apache2/sites-available/*.conf; do
+        [ -f "$f" ] || continue
+        sed -i 's/:80>/:8080>/g' "$f" || true
+        sed -i 's/ 80/ 8080/g' "$f" || true
+      done
+      systemctl restart apache2 || { echo "No se pudo reiniciar Apache"; exit 1; }
+    fi
+    systemctl restart haproxy || { echo "No se pudo reiniciar HAProxy"; exit 1; }
+  fi
+else
+  echo "Archivo de configuración de HAProxy no encontrado, no se pudo configurar." | tee -a "$LOG"
+  exit 1
+fi
+
+# --- Limpieza ---
+echo "Limpiando paquetes innecesarios..." | tee -a "$LOG"
+apt autoremove -y
+apt autoclean -y
+
+echo "Instalación completada - $(date)" | tee -a "$LOG"
+echo "Resumen:"
+echo "- Servicios: Apache2, MariaDB, SSH, HAProxy"
+echo "- Firewall: UFW habilitado (SSH, HTTP, HTTPS)"
+echo "- Usuarios creados: ${USERS[*]}"
+echo "- Contraseñas (usuario = contraseña): ver $PASS_FILE"
+echo "- PHP instalado:"
+php -v | head -n1 || echo "PHP no detectado"
