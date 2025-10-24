@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # setup_server.sh
-# Instala Apache, MariaDB, PHP, HAProxy, UFW y crea usuarios con contraseñas = nombre de usuario.
-# Compatible con Debian / Ubuntu.
+# ... (Otras variables y configuración)
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -18,13 +17,14 @@ apt update -y && apt upgrade -y
 
 # --- Paquetes básicos ---
 echo "Instalando paquetes básicos..." | tee -a "$LOG"
-# CORRECCIÓN: Se añade 'systemd-sysv' para resolver el error "No such file or directory" 
-# al habilitar servicios que usan compatibilidad SysVinit.
+# Aseguramos la instalación del paquete clave 'systemd-sysv'
 apt install -y software-properties-common apt-transport-https ca-certificates curl wget git zip htop nano vim unzip gnupg lsb-release systemd-sysv
 
 # --- Instalación de Apache2 ---
 echo "Instalando Apache2..." | tee -a "$LOG"
 apt install -y apache2 || { echo "Apache2 no pudo ser instalado"; exit 1; }
+
+# ... (Las secciones de MariaDB, PHP, HAProxy y UFW se mantienen igual) ...
 
 # --- Instalación de MariaDB ---
 echo "Instalando MariaDB..." | tee -a "$LOG"
@@ -46,15 +46,24 @@ apt install -y ufw iptables-persistent || { echo "UFW no pudo ser instalado"; ex
 
 # --- Habilitar y arrancar servicios ---
 echo "Habilitando y arrancando servicios..." | tee -a "$LOG"
-# Con 'systemd-sysv' instalado, esta línea debería funcionar correctamente.
+
+# Manejo de Apache2: Si systemctl falla (lo que causa la redirección y el error), 
+# intentamos arrancar y luego habilitar, ya que el paquete systemd-sysv-install podría 
+# estar instalado, pero el demonio systemd quizás necesita un reinicio suave.
+# Si la instalación de 'systemd-sysv' fue exitosa, el primer comando funcionará ahora.
+# Si falla, simplemente lo iniciamos.
 if ! systemctl enable apache2; then
-  echo "apache2.service no pudo ser habilitado con systemctl, intentando con update-rc.d." | tee -a "$LOG"
-  sudo update-rc.d apache2 defaults || { echo "No se pudo habilitar Apache2"; exit 1; }
+  echo "Falló systemctl enable, intentando systemctl start y re-enable." | tee -a "$LOG"
+  systemctl start apache2 || { echo "No se pudo iniciar Apache2"; exit 1; }
+  systemctl enable apache2 || { echo "Aviso: No se pudo habilitar Apache2 en el arranque."; }
 fi
 
+# El resto de servicios siguen como estaban
 systemctl enable --now mariadb
 systemctl enable --now ssh
 systemctl enable --now haproxy
+
+# ... (El resto del script, Configuración de firewall, Usuarios, HAProxy, y Limpieza se mantienen igual) ...
 
 # --- Configuración básica del firewall ---
 echo "Configurando el firewall UFW..." | tee -a "$LOG"
