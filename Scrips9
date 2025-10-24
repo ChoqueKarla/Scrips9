@@ -18,7 +18,8 @@ apt update -y && apt upgrade -y
 
 # --- Paquetes básicos ---
 echo "Instalando paquetes básicos..." | tee -a "$LOG"
-# AÑADIDO: 'systemd-sysv' para asegurar que systemctl y sus redirecciones tengan las utilidades necesarias
+# CORRECCIÓN: Se añade 'systemd-sysv' para resolver el error "No such file or directory" 
+# al habilitar servicios que usan compatibilidad SysVinit.
 apt install -y software-properties-common apt-transport-https ca-certificates curl wget git zip htop nano vim unzip gnupg lsb-release systemd-sysv
 
 # --- Instalación de Apache2 ---
@@ -45,10 +46,9 @@ apt install -y ufw iptables-persistent || { echo "UFW no pudo ser instalado"; ex
 
 # --- Habilitar y arrancar servicios ---
 echo "Habilitando y arrancando servicios..." | tee -a "$LOG"
-# Con 'systemd-sysv' instalado, esta línea debería funcionar sin problemas de "No such file or directory"
+# Con 'systemd-sysv' instalado, esta línea debería funcionar correctamente.
 if ! systemctl enable apache2; then
   echo "apache2.service no pudo ser habilitado con systemctl, intentando con update-rc.d." | tee -a "$LOG"
-  # La línea original ya tenía un buen fallback
   sudo update-rc.d apache2 defaults || { echo "No se pudo habilitar Apache2"; exit 1; }
 fi
 
